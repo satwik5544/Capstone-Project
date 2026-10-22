@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+.venv-1/
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large model weights (>25MB GitHub limit)
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+
+# Large datasets & archived files
+chest_xray/
+dataset/
+dataset_v2/
+dataset_v4/
+stage_2_train_images/
+stage_2_train_labels.csv/
+stage_2_detailed_class_info.csv/
+pediatric_pool/
+allages_run/
+_removed_files/
+
+# Logs
+*.log
+streamlit_launch.log
+streamlit_launch_err.log
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit secrets
+.streamlit/secrets.toml

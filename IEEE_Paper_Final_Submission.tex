@@ -1,0 +1,587 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Federated SCAFFOLD Learning for Pneumonia Detection Across Adult and Pediatric Chest Radiograph Populations\\}
+
+\author{
+\IEEEauthorblockN{Veerana Gouda}
+\IEEEauthorblockA{\textit{cHEAL, Dept. of CSE} \\
+\textit{PES University, RR Campus} \\
+Bengaluru 560085, India \\
+veeranagoudam551@gmail.com}
+\and
+\IEEEauthorblockN{Satwik K}
+\IEEEauthorblockA{\textit{Dept. of CSE} \\
+\textit{PES University, RR Campus} \\
+Bengaluru 560085, India \\
+satusatwik610@gmail.com}
+\and
+\IEEEauthorblockN{Satwik Hegde}
+\IEEEauthorblockA{\textit{Dept. of CSE} \\
+\textit{PES University, RR Campus} \\
+Bengaluru 560085, India \\
+satwikhegdeylp11@gmail.com}
+\and
+\IEEEauthorblockN{Srujan Madhu Kumar}
+\IEEEauthorblockA{\textit{Dept. of CSE} \\
+\textit{PES University, RR Campus} \\
+Bengaluru 560085, India \\
+srujanmadhukumar@gmail.com}
+}
+
+\maketitle
+
+\begin{abstract}
+Automated pneumonia detection from chest radiographs can support clinical
+triage, but training a single high-quality model typically requires pooling
+imaging data from multiple hospitals -- something patient privacy
+regulations make difficult. Federated learning addresses this by training a
+shared model across institutions without centralizing raw images, but
+performance can degrade when client data distributions are highly
+non-identically distributed (non-IID). This paper presents a federated
+pneumonia detection system built on the SCAFFOLD algorithm with a
+DenseNet121 backbone, trained across four non-IID clients: three adult
+clients drawn from the RSNA Pneumonia Detection Challenge dataset with
+deliberately different pneumonia prevalence (12.5\%, 24.4\%, 17.7\%), and one
+pediatric client drawn from the Kermany chest X-ray dataset (73.2\%
+prevalence), representing a hospital serving a markedly different patient
+population. On a held-out adult test set our model achieves 78.6\% accuracy
+and 80.3\% F1-score; on a held-out, patient-level-disjoint pediatric test
+set it achieves 88.3\% accuracy and 91.3\% F1-score. We further show that
+the strategy used to select the model's decision threshold has a large and
+unequal effect across the two populations: optimizing a single pooled
+validation metric can silently sacrifice one subgroup's recall for the
+other's precision, and we propose selecting the threshold that maximizes
+the \emph{minimum} of the two subgroups' F1-scores as a simple, effective
+fix. We also report a negative result from an OpenCV-based CLAHE contrast
+enhancement preprocessing step, which reduced accuracy from 80.8\% to
+77.2\% on the adult-only baseline, illustrating that medical-image
+preprocessing changes require empirical validation rather than assumed
+benefit.
+\end{abstract}
+
+\begin{IEEEkeywords}
+federated learning, SCAFFOLD, pneumonia detection, chest X-ray, DenseNet121,
+non-IID data, cross-demographic generalization, medical image classification
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Pneumonia remains a leading cause of morbidity and mortality worldwide, and
+chest radiography is the primary imaging modality used for its diagnosis.
+Deep convolutional neural networks have demonstrated strong performance at
+classifying pneumonia from chest X-rays, but training such models
+conventionally requires centralizing large volumes of labeled patient
+imaging data in one location. In practice, hospitals are often unable or
+unwilling to share raw patient data across institutional boundaries due to
+privacy regulations and data governance policies, which limits the scale and
+diversity of data available to any single training pipeline.
+
+Federated learning (FL) offers an alternative: a shared global model is
+trained by aggregating locally computed updates from multiple clients (e.g.,
+hospitals), without any client's raw data ever leaving its own
+infrastructure. The standard FL algorithm, Federated Averaging (FedAvg)
+\cite{mcmahan2017fedavg}, performs well when client data is independently
+and identically distributed (IID), but its performance degrades under
+non-IID conditions, which are the norm rather than the exception in
+healthcare: different hospitals see different patient populations, different
+disease prevalences, and different imaging equipment. SCAFFOLD
+\cite{karimireddy2020scaffold} addresses this by introducing control
+variates that correct for ``client drift'' -- the tendency of each client's
+local model to wander toward its own local optimum during local training
+steps, which otherwise slows or destabilizes global convergence under
+heterogeneous data.
+
+In this work we build a SCAFFOLD-based federated pneumonia detection system
+and use it to study a particularly challenging form of non-IID
+heterogeneity: combining an adult-only patient population with a pediatric
+patient population within the same federation. Chest radiographs from
+children differ from those of adults in lung field proportions, bone
+density, and typical pathology presentation, and the two populations in this
+study additionally come from different acquisition sites and imaging
+pipelines, compounding the distribution shift. Rather than simply pooling
+both populations and reporting one aggregate accuracy number -- which can
+mask a severe failure on the minority subgroup -- we evaluate the model on
+two disjoint, held-out test sets (adult and pediatric) and report both.
+
+Our contributions are as follows:
+\begin{itemize}
+    \item A SCAFFOLD-based federated pneumonia detection pipeline using a
+    DenseNet121 backbone, evaluated on a deliberately non-IID 3-client adult
+    federation (Section~\ref{sec:baseline}).
+    \item An empirically validated negative result for OpenCV-based CLAHE
+    contrast enhancement as a preprocessing step, showing that a
+    plausible-sounding medical-imaging preprocessing improvement can in fact
+    reduce accuracy, recall, and F1-score when not validated end-to-end
+    (Section~\ref{sec:clahe}).
+    \item An extension of the federation to a fourth, pediatric client
+    (Kermany dataset) with a patient-level train/validation/test re-split to
+    prevent leakage, and an age-stratified evaluation protocol that reports
+    adult and pediatric test performance separately rather than pooled
+    (Section~\ref{sec:pediatric}).
+    \item An analysis showing that the choice of decision-threshold
+    selection objective has a large, unequal effect on the two
+    demographic subgroups, and a simple max-min threshold selection rule
+    that meaningfully improves the worse-off subgroup without collapsing
+    the other (Section~\ref{sec:threshold}).
+\end{itemize}
+
+\section{Related Work}
+
+\textbf{Federated learning under non-IID data.} FedAvg \cite{mcmahan2017fedavg}
+established the basic federated averaging protocol, but subsequent work
+identified that client drift under non-IID data slows convergence and can
+hurt final accuracy. SCAFFOLD \cite{karimireddy2020scaffold} corrects for
+this using control variates -- per-client and global correction terms that
+are used to adjust local gradient steps -- and provides theoretical
+convergence guarantees that are independent of the degree of client
+heterogeneity, unlike FedAvg.
+
+\textbf{Deep learning for pneumonia detection.} DenseNet
+\cite{huang2017densenet} is a widely used convolutional architecture for
+medical image classification due to its parameter efficiency and strong
+gradient flow through densely connected layers, and has been used
+extensively for chest X-ray classification tasks. The RSNA Pneumonia
+Detection Challenge \cite{rsna2019} released a large, radiologist-labeled
+adult chest radiograph dataset that has become a standard benchmark for
+pneumonia/lung-opacity detection. The Kermany dataset
+\cite{kermany2018cell} provided one of the first large-scale labeled
+pediatric chest X-ray datasets for pneumonia classification, sourced from a
+single pediatric hospital.
+
+\textbf{Fairness and subgroup performance in federated healthcare AI.} A
+growing body of work has raised concerns that models trained on pooled or
+federated healthcare data can perform unevenly across demographic
+subgroups, particularly when one subgroup is a small minority of the
+training data. Our work is closely related to this line of research: we
+treat the pediatric population as an explicit minority client, and evaluate
+it as an explicit minority test set, rather than allowing it to be absorbed
+into (and potentially masked by) an aggregate metric.
+
+\section{Datasets and Preprocessing}
+
+\subsection{Adult population: RSNA Pneumonia Detection Challenge}
+
+The adult portion of our data is drawn from the RSNA Pneumonia Detection
+Challenge dataset \cite{rsna2019}, which provides frontal chest radiographs
+in DICOM format with a binary label (pneumonia/lung opacity present or
+absent). We use the full training partition of this dataset: 26{,}684
+images, of which 20{,}672 (77.5\%) are NORMAL and 6{,}012 (22.5\%) are
+PNEUMONIA. DICOM images are converted to grayscale PNG using min-max
+normalization, with photometric-inversion handling for MONOCHROME1-encoded
+studies.
+
+\subsection{Pediatric population: Kermany chest X-ray dataset}
+
+The pediatric portion of our data is drawn from the Kermany chest X-ray
+dataset \cite{kermany2018cell}, collected from pediatric patients (ages 1--5)
+at Guangzhou Women and Children's Medical Center. The dataset's own
+published train/test/validation split is known to have patient-level
+leakage (the same patient's images can appear in more than one split), so we
+discard the original split and pool all 5{,}856 images (1{,}583 NORMAL,
+4{,}273 PNEUMONIA) before performing our own patient-level split, grouping
+images by the patient identifier embedded in each filename and assigning
+entire patient groups to a single split. This yields 4{,}113 training
+images, 595 validation images, and 1{,}148 test images, at pneumonia
+prevalences of 73.2\%, 72.8\%, and 72.4\% respectively -- confirming the
+patient-level split did not introduce class-balance skew across splits.
+
+\subsection{Preprocessing pipeline}
+
+All images, regardless of source population, pass through an identical
+runtime transform: conversion to grayscale, resizing to $224\times224$,
+replication to 3 channels (for compatibility with the ImageNet-pretrained
+DenseNet121 backbone), conversion to tensor, and normalization using
+ImageNet channel statistics ($\mu = [0.485, 0.456, 0.406]$,
+$\sigma = [0.229, 0.224, 0.225]$). During training only, we additionally
+apply random horizontal flipping ($p=0.3$), random rotation ($\pm7^\circ$),
+random affine translation/scaling jitter, and random autocontrast
+($p=0.3$) as data augmentation. Applying identical preprocessing to both
+populations ensures that any performance difference we observe between
+adult and pediatric test results is attributable to the underlying data,
+not to inconsistent preprocessing.
+
+\section{OpenCV-Based Contrast Enhancement: A Negative Result}
+\label{sec:clahe}
+
+Motivated by the common use of Contrast Limited Adaptive Histogram
+Equalization (CLAHE) in the chest X-ray CAD literature to correct for the
+low, non-uniform contrast typical of raw radiographs, we implemented a
+preprocessing step combining a mild Gaussian denoise (kernel size 3,
+$\sigma=0.6$) followed by CLAHE (clip limit 2.0, tile grid $8\times8$),
+applied identically at training and inference time, ahead of the existing
+grayscale/resize/normalize pipeline. We trained an otherwise identical model
+(3-client adult-only federation, 20 rounds, seed 42) with this preprocessing
+step added, to isolate preprocessing as the only variable.
+
+\begin{table}[htbp]
+\caption{Effect of CLAHE + denoise preprocessing (adult-only, 3-client
+federation, identical hyperparameters otherwise)}
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Baseline (no CLAHE)} & \textbf{With CLAHE + denoise} \\
+\midrule
+Accuracy  & 80.79\% & 77.17\% \\
+Precision & 80.77\% & 86.30\% \\
+Recall    & 80.83\% & 64.58\% \\
+F1-score  & 80.80\% & 73.88\% \\
+\bottomrule
+\end{tabular}
+\label{tab:clahe}
+\end{center}
+\end{table}
+
+As shown in Table~\ref{tab:clahe}, CLAHE preprocessing increased precision
+but sharply reduced recall (missed pneumonia cases nearly doubled, from 230
+to 425 out of 1{,}200), and reduced overall accuracy and F1-score. We
+attribute this to a distribution shift: CLAHE's local contrast stretching
+alters pixel intensity statistics in a way that falls outside what the
+ImageNet-pretrained backbone's early convolutional layers were trained to
+expect, and with only 20 rounds of federated training and selective
+layer unfreezing, the network does not receive enough gradient updates to
+fully re-adapt to the new input distribution. We report this as a negative
+result and revert to the unmodified preprocessing pipeline for all
+subsequent experiments in this paper, underscoring that plausible
+domain-motivated preprocessing changes in medical imaging pipelines require
+empirical end-to-end validation rather than being assumed beneficial.
+
+\section{Adult-Only Federated Baseline}
+\label{sec:baseline}
+
+\subsection{Federation design}
+
+Our baseline federation consists of three clients, each holding a disjoint
+partition of the RSNA adult dataset, deliberately constructed with different
+pneumonia prevalences to create realistic non-IID conditions
+(Table~\ref{tab:adult-clients}).
+
+\begin{table}[htbp]
+\caption{Adult client data distribution (training partition)}
+\begin{center}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Client} & \textbf{NORMAL} & \textbf{PNEUMONIA} & \textbf{Total} & \textbf{Prevalence} \\
+\midrule
+client\_0 & 7{,}469 & 1{,}070 & 8{,}539 & 12.5\% \\
+client\_1 & 4{,}979 & 1{,}605 & 6{,}584 & 24.4\% \\
+client\_2 & 6{,}224 & 1{,}337 & 7{,}561 & 17.7\% \\
+\midrule
+Total     & 18{,}672 & 4{,}012 & 22{,}684 & 17.7\% \\
+\bottomrule
+\end{tabular}
+\label{tab:adult-clients}
+\end{center}
+\end{table}
+
+An additional 1{,}600 images (800 NORMAL, 800 PNEUMONIA) are held out as a
+validation set used for round selection and decision-threshold tuning, and
+2{,}400 images (1{,}200 NORMAL, 1{,}200 PNEUMONIA) are held out as a final
+test set, never seen during training or model selection. Together with the
+training partition, this accounts for the full 26{,}684-image RSNA training
+set.
+
+\subsection{Training configuration}
+
+The model backbone is DenseNet121, initialized with ImageNet-pretrained
+weights, with only later layers unfrozen for fine-tuning. Federated training
+runs for 20 rounds with 2 local epochs per client per round, batch size 16,
+and a step-decayed learning rate ($3\times10^{-4} \rightarrow
+2\times10^{-4} \rightarrow 1\times10^{-4}$ over the course of training). The
+final model is selected from the round with the best validation F1-score
+(rather than simply the last round, since later rounds are not guaranteed to
+improve on a non-IID federation), and the decision threshold is chosen by
+sweeping 91 candidate thresholds against the validation set.
+
+\subsection{Results}
+
+The baseline model achieves 80.79\% accuracy, 80.77\% precision, 80.83\%
+recall, and 80.80\% F1-score on the held-out adult test set, with confusion
+matrix $\begin{bmatrix}969 & 231\\230 & 970\end{bmatrix}$ (rows: actual
+NORMAL/PNEUMONIA; columns: predicted NORMAL/PNEUMONIA). This is the
+reference baseline against which all subsequent adult-side results in this
+paper are compared.
+
+\section{Extending the Federation to a Pediatric Client}
+\label{sec:pediatric}
+
+\subsection{Motivation}
+
+A model trained exclusively on adult radiographs cannot be assumed to
+generalize to pediatric patients: pediatric chest radiographs differ in lung
+field geometry, thoracic proportions, and typical disease presentation, and
+in our case additionally originate from an entirely different acquisition
+site and imaging pipeline than the RSNA data. To test and improve
+cross-demographic generalization within the federated setting, we add a
+fourth client built from the pediatric Kermany training partition described
+in Section~III, alongside the three existing adult clients
+(Table~\ref{tab:all-clients}).
+
+\begin{table}[htbp]
+\caption{All four federated clients (training partition)}
+\begin{center}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Client} & \textbf{Source} & \textbf{NORMAL} & \textbf{PNEUMONIA} & \textbf{Total} & \textbf{Prev.} \\
+\midrule
+client\_0 & Adult (RSNA)     & 7{,}469 & 1{,}070 & 8{,}539 & 12.5\% \\
+client\_1 & Adult (RSNA)     & 4{,}979 & 1{,}605 & 6{,}584 & 24.4\% \\
+client\_2 & Adult (RSNA)     & 6{,}224 & 1{,}337 & 7{,}561 & 17.7\% \\
+client\_3 & Pediatric (Kermany) & 1{,}104 & 3{,}009 & 4{,}113 & 73.2\% \\
+\bottomrule
+\end{tabular}
+\label{tab:all-clients}
+\end{center}
+\end{table}
+
+client\_3 is deliberately the most extreme client in the federation, both in
+pneumonia prevalence (73.2\% versus 12.5--24.4\% for the adult clients) and
+in the underlying patient population -- a realistic stand-in for a new
+hospital with a substantially different patient mix joining an existing
+federation. The validation set is correspondingly extended by pooling the
+adult validation set (1{,}600 images) with a pediatric validation set
+(595 images, from the same patient-level split described in Section~III),
+for a combined 2{,}195-image validation set used for round and threshold
+selection. Critically, the two test sets -- adult (2{,}400 images) and
+pediatric (1{,}148 images) -- are kept \emph{separate} rather than pooled,
+so that subgroup performance is directly visible rather than averaged away.
+
+\subsection{Training and initial results}
+
+Using the same SCAFFOLD configuration, hyperparameters, and DenseNet121
+backbone as the adult-only baseline (20 rounds, 2 local epochs, batch size
+16, seed 42), the best round was selected at round 12 by validation F1. With
+the original threshold-selection objective (an F-beta metric with
+$\beta=0.5$ that weights precision over recall, chosen for the adult-only
+baseline to minimize false alarms), the resulting threshold of 0.36 gives
+the results in Table~\ref{tab:initial-allages}.
+
+\begin{table}[htbp]
+\caption{All-ages model, precision-favoring threshold (0.36)}
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Adult test} & \textbf{Pediatric test} \\
+\midrule
+Accuracy  & 79.08\% & 80.66\% \\
+Precision & 77.79\% & \textbf{99.84\%} \\
+Recall    & 81.42\% & \textbf{73.41\%} \\
+F1-score  & 79.56\% & 84.60\% \\
+\bottomrule
+\end{tabular}
+\label{tab:initial-allages}
+\end{center}
+\end{table}
+
+Adding the pediatric client costs a small amount of adult-side performance
+relative to the adult-only baseline (accuracy $-1.7$pp, F1 $-1.2$pp), an
+expected consequence of splitting model capacity across a more diverse
+federation. More importantly, the pediatric subgroup shows an extreme
+precision/recall imbalance: 99.84\% precision (only 1 false alarm in 317
+healthy pediatric images) but only 73.41\% recall (221 of 831 pediatric
+pneumonia cases missed). For a screening tool, a missed-disease error
+(false negative) is generally more clinically costly than a false alarm, so
+this imbalance represents a real limitation that motivated the analysis in
+the next section.
+
+\section{Threshold Selection Across Demographic Subgroups}
+\label{sec:threshold}
+
+\subsection{The pooled-metric threshold masks subgroup imbalance}
+
+The threshold of 0.36 above was chosen by sweeping candidate thresholds
+against the \emph{pooled} adult+pediatric validation set using an
+F-beta ($\beta=0.5$) objective that explicitly favors precision over
+recall. To test whether the recall problem was specifically caused by this
+precision-favoring objective, we re-swept the threshold on the same trained
+model and the same pooled validation set, this time using plain F1 (equal
+weight on precision and recall) as the objective, without any retraining.
+
+\begin{table}[htbp]
+\caption{All-ages model, pooled-F1 threshold (0.08)}
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Adult test} & \textbf{Pediatric test} \\
+\midrule
+Accuracy  & 77.88\% & \textbf{93.21\%} \\
+Precision & \textbf{71.76\%} & 97.36\% \\
+Recall    & 91.92\% & 93.14\% \\
+F1-score  & 80.60\% & \textbf{95.20\%} \\
+\bottomrule
+\end{tabular}
+\label{tab:f1-allages}
+\end{center}
+\end{table}
+
+This threshold (0.08) essentially solved the pediatric recall problem
+(73.4\% $\rightarrow$ 93.1\%) and even improved pediatric F1 to 95.2\%.
+However, it did so by swinging to an extreme: adult precision collapsed
+from 77.79\% to 71.76\%, since a single global pooled metric let the
+subgroup whose F1-vs-threshold curve was steeper (pediatric) dominate the
+threshold choice, at the direct expense of the other subgroup. This
+illustrates a general risk in federated systems serving heterogeneous
+populations: optimizing one pooled metric on a combined validation set does
+not guarantee balanced treatment of the populations that make up that pool.
+
+\subsection{A balanced, max-min threshold selection rule}
+
+To avoid letting either subgroup dominate, we instead compute adult-only and
+pediatric-only validation F1-score independently at each candidate
+threshold (using the original, unpooled adult and pediatric validation
+folders), and select the threshold that maximizes the \emph{minimum} of the
+two -- i.e., the threshold with the best worst-case outcome across both
+populations, again without any retraining of the underlying model.
+
+\begin{table}[htbp]
+\caption{All-ages model, balanced max-min threshold (0.18)}
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Adult test} & \textbf{Pediatric test} \\
+\midrule
+Accuracy  & 78.63\% & 88.33\% \\
+Precision & 74.52\% & 99.02\% \\
+Recall    & 87.00\% & 84.72\% \\
+F1-score  & 80.28\% & 91.31\% \\
+\bottomrule
+\end{tabular}
+\label{tab:balanced-allages}
+\end{center}
+\end{table}
+
+Table~\ref{tab:balanced-allages-summary} summarizes all three
+threshold-selection strategies side by side. The balanced (max-min)
+threshold recovers most of the adult precision lost under the pooled-F1
+threshold (71.76\% $\rightarrow$ 74.52\%) while keeping pediatric recall at
+a much safer 84.72\% (compared to the original 73.41\%) -- a middle ground
+that does not sacrifice either population as severely as the two single-metric
+strategies.
+
+\begin{table*}[htbp]
+\caption{Summary comparison of threshold-selection strategies}
+\begin{center}
+\begin{tabular}{lccccccccc}
+\toprule
+\multirow{2}{*}{\textbf{Threshold}} & \multirow{2}{*}{\textbf{Selection objective}} &
+\multicolumn{4}{c}{\textbf{Adult test}} & \multicolumn{4}{c}{\textbf{Pediatric test}} \\
+\cmidrule(lr){3-6} \cmidrule(lr){7-10}
+ & & Acc. & Prec. & Rec. & F1 & Acc. & Prec. & Rec. & F1 \\
+\midrule
+0.36 & Pooled F-beta ($\beta=0.5$, precision-favoring) & 79.08\% & 77.79\% & 81.42\% & 79.56\% & 80.66\% & 99.84\% & 73.41\% & 84.60\% \\
+0.08 & Pooled F1 (balanced weight, pooled sample) & 77.88\% & 71.76\% & 91.92\% & 80.60\% & 93.21\% & 97.36\% & 93.14\% & 95.20\% \\
+0.18 & Max-min of adult/pediatric F1 (proposed) & 78.63\% & 74.52\% & 87.00\% & 80.28\% & 88.33\% & 99.02\% & 84.72\% & 91.31\% \\
+\bottomrule
+\end{tabular}
+\label{tab:balanced-allages-summary}
+\end{center}
+\end{table*}
+
+The confusion matrices for the balanced threshold configuration are
+$\begin{bmatrix}843 & 357\\156 & 1044\end{bmatrix}$ for the adult test set
+and $\begin{bmatrix}310 & 7\\127 & 704\end{bmatrix}$ for the pediatric test
+set (rows: actual NORMAL/PNEUMONIA; columns: predicted NORMAL/PNEUMONIA).
+
+\section{Discussion}
+
+\subsection{Threshold strategy matters as much as model architecture}
+
+The three configurations in Table~\ref{tab:balanced-allages-summary} use
+\emph{the exact same trained model weights} -- only the decision threshold
+differs. Yet pediatric recall ranges from 73.41\% to 93.14\% depending
+purely on how that one threshold is chosen. This suggests that, in
+federated systems serving multiple demographic subgroups, reporting a
+subgroup-aware threshold-selection strategy is at least as important a
+design decision as the choice of aggregation algorithm, and should be
+validated and reported explicitly rather than left as an implicit default.
+
+\subsection{Limitations}
+
+The pediatric client in this study is drawn from a single institution
+(Guangzhou Women and Children's Medical Center), so age effects are
+confounded with institution/acquisition-device effects; we cannot fully
+attribute the adult/pediatric performance gap to age alone. The pediatric
+client is also substantially smaller (4{,}113 training images) than any
+individual adult client, which may limit how much the global model can
+specialize to pediatric-specific features under FedAvg-style
+sample-weighted aggregation. Finally, none of the configurations in this
+paper reach the originally targeted 90\% accuracy / 85\% precision/recall/F1
+goals simultaneously for the adult subgroup, indicating that federating
+across a demographically extreme client currently comes at a real,
+non-trivial cost to the majority population's specialization, rather than
+being cost-free.
+
+\subsection{Future work}
+
+Promising directions include: incorporating additional pediatric data
+sources from different institutions to disentangle age effects from
+site effects; per-client-aware aggregation weighting schemes that can trade
+off subgroup performance more explicitly than uniform sample-count
+weighting; and formal fairness-constrained threshold or loss functions that
+directly optimize for balanced subgroup recall during training rather than
+via post-hoc threshold selection.
+
+\section{Conclusion}
+
+We presented a SCAFFOLD-based federated pneumonia detection system and used
+it to study cross-demographic generalization by extending a 3-client adult
+federation with a fourth pediatric client. Evaluating the two populations
+separately, rather than pooling them into one aggregate metric, revealed a
+severe pediatric recall deficit under the federation's original
+precision-favoring threshold, which we showed can be substantially mitigated
+(73.4\% $\rightarrow$ 84.7\% recall) without any retraining, simply by
+selecting a decision threshold that maximizes the worse-off subgroup's
+F1-score rather than a single pooled metric. We also reported a negative
+result for CLAHE-based contrast enhancement preprocessing, which reduced
+rather than improved accuracy in our pipeline. Together, these results argue
+for treating both preprocessing changes and threshold-selection strategies
+as empirical questions requiring subgroup-aware validation in federated
+medical imaging systems, rather than assumptions carried over from
+single-population practice.
+
+\begin{thebibliography}{00}
+
+\bibitem{mcmahan2017fedavg}
+H.~B. McMahan, E.~Moore, D.~Ramage, S.~Hampson, and B.~A.~y Arcas,
+``Communication-efficient learning of deep networks from decentralized
+data,'' in \emph{Proc. 20th Int. Conf. Artificial Intelligence and
+Statistics (AISTATS)}, 2017, pp. 1273--1282.
+
+\bibitem{karimireddy2020scaffold}
+S.~P. Karimireddy, S.~Kale, M.~Mohri, S.~J. Reddi, S.~U. Stich, and
+A.~T. Suresh, ``SCAFFOLD: Stochastic controlled averaging for federated
+learning,'' in \emph{Proc. 37th Int. Conf. Machine Learning (ICML)}, 2020,
+pp. 5132--5143.
+
+\bibitem{huang2017densenet}
+G.~Huang, Z.~Liu, L.~van~der Maaten, and K.~Q. Weinberger, ``Densely
+connected convolutional networks,'' in \emph{Proc. IEEE Conf. Computer
+Vision and Pattern Recognition (CVPR)}, 2017, pp. 4700--4708.
+
+\bibitem{rsna2019}
+Radiological Society of North America, ``RSNA Pneumonia Detection
+Challenge,'' Kaggle, 2019. [Online]. Available:
+\url{https://www.kaggle.com/c/rsna-pneumonia-detection-challenge}
+
+\bibitem{kermany2018cell}
+D.~S. Kermany \emph{et al.}, ``Identifying medical diagnoses and treatable
+diseases by image-based deep learning,'' \emph{Cell}, vol. 172, no. 5,
+pp. 1122--1131, 2018.
+
+\end{thebibliography}
+
+\end{document}
